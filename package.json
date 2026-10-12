@@ -1,0 +1,12 @@
+{
+  "name": "marble-arena-multiplayer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Small real-time multiplayer arena game for hosting on Render",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
