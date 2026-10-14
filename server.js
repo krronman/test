@@ -9,7 +9,6 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-
 const PORT = process.env.PORT || 3000;
 const GRACE_MS = 4000; // keeps a user alive across page refreshes
 const TICK_MS = 50;    // position broadcast rate (20 per second)
@@ -426,7 +425,7 @@ async function handleBuy(req, res) {
   acct.gold -= def.price;
   acct.opened[item] = (acct.opened[item] || 0) + 1; // progress record; what a chest contains comes later
   save();
-  pushChat(whisper(user, acct.name + ' 님이 ' + def.name + ' 를 열었습니다!'); // only the buyer sees this);
+  whisper(user, acct.name + ' 님이 ' + def.name + ' 를 열었습니다!'); // only the buyer sees this
   json(res, 200, { gold: acct.gold, item });
 }
 
