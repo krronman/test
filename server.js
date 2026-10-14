@@ -41,8 +41,14 @@ const STATIC = {
   '/coin-bar.png': 'coin-bar.png', '/exit-btn.png': 'exit-btn.png',
   '/crate-wood.png': 'crate-wood.png', '/crate-steel.png': 'crate-steel.png',
   '/crate-gold.png': 'crate-gold.png', '/crate-diamond.png': 'crate-diamond.png',
+  '/star.png': 'star.png',
 };
 const STAR_REWARD = 10; // gold for reaching the star island
+// The floating star on the course: one at a time, shared by everybody, replaced every 2 minutes.
+const FLOAT_STAR = { reward: 10, everyMs: 2 * 60 * 1000, reach: 90 }; // reach: how close (px) a player must be to take it
+// Where it can appear: grass on the islands that are neither the start nor the finish island. [x, y] in sky-image pixels.
+const STAR_SPOTS = [[328, 536], [393, 274], [488, 660], [566, 412], [726, 540], [764, 325], [816, 540],
+                    [988, 554], [998, 451], [1020, 237], [1149, 586], [1190, 812]];
 // Things sold in the shop. Prices are checked here on the server, never on the client.
 const SHOP = {
   wood:  { name: '나무 상자', price: 100 },
@@ -146,6 +152,11 @@ setInterval(() => {
   if (dirty) { dirty = false; broadcast(); }
 }, TICK_MS);
 
+// A system line that only one player sees (it is not kept in the shared chat history).
+function whisper(user, text) {
+  const msg = `event: chat\ndata: ${JSON.stringify({ kind: 'system', text, t: Date.now() })}\n\n`;
+  for (const res of user.conns) res.write(msg);
+}
 function scheduleRemoval(user) {
   clearTimeout(user.timer);
   user.timer = setTimeout(() => {
@@ -319,6 +330,43 @@ async function handleLogout(req, res) {
   json(res, 200, { ok: true });
 }
 
+// ---------------------------------------------------------------- the floating star (single-player course)
+let floatStar = null;       // { id, x, y, expiresAt } or null
+let floatLast = null;       // the spot of the previous star, so the next one appears somewhere else
+let floatNext = Date.now(); // when the next star appears (right after the server starts, then every 2 minutes)
+let floatId = 0;
+const starState = () => ({ star: floatStar, now: Date.now() }); // 'now' lets every browser line its clock up with the server
+
+function floatTick() {
+  const now = Date.now();
+  if (now < floatNext) return;
+  floatNext = now + FLOAT_STAR.everyMs; // a star that is still there is simply replaced
+  let spot;
+  do { spot = STAR_SPOTS[Math.floor(Math.random() * STAR_SPOTS.length)]; } while (spot === floatLast && STAR_SPOTS.length > 1);
+  floatLast = spot;
+  floatStar = { id: ++floatId, x: spot[0], y: spot[1], expiresAt: floatNext };
+  sendAll('star', starState());
+}
+setInterval(floatTick, 1000);
+
+// A player touched the star. First come, first served: the star is gone for everybody and the winner gets the gold.
+async function handleStar(req, res) {
+  const { token, id, x, y } = await readJson(req);
+  const user = userByToken(token);
+  if (!user) return json(res, 401, { error: 'Not logged in' });
+  const acct = accounts[user.key];
+  if (!user.sp || !floatStar || floatStar.id !== id) return json(res, 409, { error: 'Already taken', gold: acct.gold });
+  // the browser says where the player stands; claims from far away are refused
+  if (!Number.isFinite(x) || !Number.isFinite(y) || Math.hypot(x - floatStar.x, y - floatStar.y) > FLOAT_STAR.reach) {
+    return json(res, 400, { error: 'Too far', gold: acct.gold });
+  }
+  floatStar = null;
+  acct.gold += FLOAT_STAR.reward;
+  save();
+  sendAll('star', starState());
+  whisper(user, '떠다니는 별을 획득했습니다! +' + FLOAT_STAR.reward + ' 골드'); // only the winner sees this
+  json(res, 200, { gold: acct.gold });
+}
 // ---------------------------------------------------------------- game actions
 async function handleMove(req, res) {
   const { token, x, y, z, dir, moving } = await readJson(req);
@@ -378,7 +426,7 @@ async function handleBuy(req, res) {
   acct.gold -= def.price;
   acct.opened[item] = (acct.opened[item] || 0) + 1; // progress record; what a chest contains comes later
   save();
-  pushChat('system', acct.name + ' 님이 ' + def.name + ' 를 열었습니다!');
+  pushChat(whisper(user, acct.name + ' 님이 ' + def.name + ' 를 열었습니다!'); // only the buyer sees this);
   json(res, 200, { gold: acct.gold, item });
 }
 
@@ -408,6 +456,7 @@ function handleEvents(req, res, url) {
   clearTimeout(user.timer);
   user.conns.add(res);
   res.write(`event: chathistory\ndata: ${JSON.stringify(chatLog)}\n\n`);
+  res.write(`event: star\ndata: ${JSON.stringify(starState())}\n\n`);
   res.write(`event: users\ndata: ${JSON.stringify(onlineUsers())}\n\n`);
   dirty = true;
 
@@ -438,11 +487,12 @@ const server = http.createServer((req, res) => {
   const post = {
     '/api/register': handleRegister, '/api/login': handleLogin, '/api/resume': handleResume, '/api/logout': handleLogout,
     '/api/move': handleMove, '/api/scene': handleScene, '/api/reward': handleReward,
-    '/api/buy': handleBuy, '/api/chat': handleChat,
+    '/api/buy': handleBuy, '/api/chat': handleChat, '/api/star': handleStar,
   };
   if (req.method === 'POST' && post[url.pathname]) {
     return post[url.pathname](req, res).catch((e) => { console.error(e); if (!res.headersSent) json(res, 500, { error: 'Server error' }); });
   }
+  if (req.method === 'GET' && url.pathname === '/api/time') return json(res, 200, { now: Date.now() }); // browsers use this to line their clocks up
   if (req.method === 'GET' && url.pathname === '/api/events') return handleEvents(req, res, url);
   json(res, 404, { error: 'Not found' });
 });
@@ -678,7 +728,12 @@ const PAGE = /* html */ `<!doctype html>
   // Sprite frames: 0 down, 1 down-right, 2 right, 3 up-right, 4 up, 5 up-left, 6 left, 7 down-left
   var DIR_TABLE = [[5, 4, 3], [6, -1, 2], [7, 0, 1]]; // [dy+1][dx+1]
   // Settings of the two scenes. The character is a little smaller in the sky course.
-  var LOBBY = { speed: 270, scale: 0.6,  jumpV: 470, gravity: 1900 };
+  var LOBBY = { speed: 270, scale: 0.18, jumpV: 470, gravity: 1900 };
+  // Jump pads: the two blue stone pads on the course. Stepping on one launches the player high up.
+  var PADS = [{ x: 406, y: 403 }, { x: 1170, y: 419 }], PAD_RX = 32, PAD_RY = 22, PAD_V = 1000; // PAD_V: launch speed (a normal jump is 440)
+  function onPad(x, y) {
+    return PADS.some(function (p) { var dx = (x - p.x) / PAD_RX, dy = (y - p.y) / PAD_RY; return dx * dx + dy * dy <= 1; });
+  }
   var SKY   = { speed: 270, scale: 0.45, jumpV: 440, gravity: 1700, spawn: { x: 165, y: 778 } };
   // The barred gate at the top of the arena image, and the spot in front of it that counts as "reaching the door"
   var DOOR = { cx: 768, x0: 731, x1: 805, y0: 6, y1: 74 };
@@ -703,6 +758,7 @@ const PAGE = /* html */ `<!doctype html>
   var bg = new Image(); bg.src = '/arena.png';
   var sprites = new Image(); sprites.src = '/sprites.png';
   var skyBg = new Image(); skyBg.src = '/sky.png';
+  var starImg = new Image(); starImg.src = '/star.png';
 
   // Which pixels of the sky map are solid: red = grass (or bridge) plus anything standing on it (pads, fences, rocks), yellow = the star island. Everything else is air or cliff.
   var walkData = null;
@@ -843,6 +899,10 @@ const PAGE = /* html */ `<!doctype html>
       JSON.parse(e.data).forEach(function (m) { addChat(m); });
     });
     es.addEventListener('chat', function (e) { addChat(JSON.parse(e.data)); });
+    es.addEventListener('star', function (e) { // the floating star: where it is, and the server's clock
+      starState = JSON.parse(e.data).star;
+      if (!clockSynced) { clockSynced = true; syncClock(); }
+    });
     es.addEventListener('kicked', function () { forgetMe('This account was logged in somewhere else.'); });
     es.onerror = function () {
       // The stream is closed for good (e.g. the server restarted): sign in again quietly with the token.
@@ -1036,6 +1096,47 @@ const PAGE = /* html */ `<!doctype html>
       .catch(function () {});
     transition(toSpawn);
   }
+
+    // ---- the floating star (single-player course): same place and same bobbing for every player ----
+  var starState = null, clockOff = 0, clockSynced = false, claimingId = 0; // clockOff: server time minus this browser's time
+  function syncClock() { // like NTP: of a few round trips to the server, trust the fastest one
+    var best = null, n = 0;
+    (function one() {
+      var t0 = Date.now();
+      fetch('/api/time').then(function (r) { return r.json(); }).then(function (d) {
+        var t1 = Date.now(), rtt = t1 - t0;
+        if (!best || rtt < best.rtt) { best = { rtt: rtt }; clockOff = d.now - (t0 + t1) / 2; }
+        if (++n < 6) setTimeout(one, 120);
+      }).catch(function () {});
+    })();
+  }
+  var STAR_W = 46, STAR_HOVER = 40, STAR_BOB = 7, STAR_PERIOD = 2400; // size, height above the grass, bob height and bob length (ms)
+  function drawFloatStar() {
+    if (!starState || !starImg.complete) return;
+    var t = Date.now() + clockOff; // the bob depends only on the server's clock, so everybody sees the same phase
+    var bob = Math.sin((t % STAR_PERIOD) / STAR_PERIOD * Math.PI * 2) * STAR_BOB;
+    var h = STAR_W * starImg.naturalHeight / starImg.naturalWidth;
+    ctx.fillStyle = 'rgba(40,30,10,0.25)'; // shadow on the grass
+    ctx.beginPath(); ctx.ellipse(starState.x, starState.y, 15 - bob * 0.3, 5 - bob * 0.1, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,214,74,0.9)'; ctx.shadowBlur = 14;
+    ctx.drawImage(starImg, starState.x - STAR_W / 2, starState.y - STAR_HOVER - bob - h / 2, STAR_W, h);
+    ctx.restore();
+  }
+  function claimStar() { // the server decides who was first
+    var s = starState; claimingId = s.id;
+    post('/api/star', { token: token, id: s.id, x: me.x, y: me.y })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
+      .then(function (x) {
+        if (typeof x.d.gold === 'number') setGold(x.d.gold, x.ok);
+        if (x.ok) {
+          floaters.push({ x: me.x, y: me.y - FH * SKY.scale - 34, text: '+10', color: '#ffd24a', t0: performance.now() });
+          if (starState && starState.id === s.id) starState = null;
+        } else if (x.status !== 409) claimingId = 0; // not "already taken": allow another try
+      })
+      .catch(function () { claimingId = 0; });
+  }
+
 
   // ---- game loop ----
   function update(dt) {
