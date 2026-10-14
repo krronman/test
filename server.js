@@ -17,6 +17,20 @@ const COLORS = ['#2f6f5e', '#b4532a', '#3b5bdb', '#9c36b5', '#c2255c', '#e67700'
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'accounts.json');
 
+// Optional: keep accounts in Upstash Redis instead of a file (for hosts whose disk is wiped on restart, e.g. Render's free tier).
+// Set both environment variables to switch it on; leave them out and the file above is used.
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_KEY = 'marble-arena:data';
+async function redis(cmd) { // one Redis command over HTTPS, e.g. ['GET', 'key'] (needs Node 18+ for fetch)
+  const r = await fetch(REDIS_URL, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + REDIS_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd),
+  });
+  const d = await r.json();
+  if (!r.ok || d.error) throw new Error(d.error || 'HTTP ' + r.status);
+  return d.result;
+}
+
 // Walkable floor of the arena image (1536x1024), an ellipse in image pixels.
 const FLOOR = { cx: 768, cy: 500, rx: 575, ry: 345 };
 const STATIC = {
@@ -44,17 +58,30 @@ let accounts = {};
 /** sha256(token) -> loginId (lower case); kept on disk too so a server restart does not log everyone out */
 let sessions = {};
 
-try {
-  const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  accounts = saved.accounts || {};
-  sessions = saved.sessions || {};
-} catch (e) {
-  if (e.code !== 'ENOENT') console.warn('Could not read ' + DATA_FILE + ': ' + e.message);
+async function loadAll() {
+  if (REDIS_URL) { // accounts live in Upstash Redis
+    const raw = await redis(['GET', REDIS_KEY]);
+    if (raw) { const saved = JSON.parse(raw); accounts = saved.accounts || {}; sessions = saved.sessions || {}; }
+    return;
+  }
+  try {
+    const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    accounts = saved.accounts || {};
+    sessions = saved.sessions || {};
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('Could not read ' + DATA_FILE + ': ' + e.message);
+  }
 }
 
 let saveTimer = null;
+let redisChain = Promise.resolve(); // Redis saves run one after another, so an older save can never land last
 function saveNow() {
   clearTimeout(saveTimer); saveTimer = null;
+  if (REDIS_URL) {
+    const body = JSON.stringify({ accounts, sessions });
+    redisChain = redisChain.then(() => redis(['SET', REDIS_KEY, body])).catch((e) => console.error('Could not save progress to Redis: ' + e.message));
+    return redisChain;
+  }
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const tmp = DATA_FILE + '.tmp';
@@ -62,8 +89,8 @@ function saveNow() {
     fs.renameSync(tmp, DATA_FILE); // write + rename: a crash never leaves half a file
   } catch (e) { console.error('Could not save progress: ' + e.message); }
 }
-function save() { if (!saveTimer) saveTimer = setTimeout(saveNow, 300); } // batches bursts of changes
-['SIGINT', 'SIGTERM'].forEach((sig) => process.on(sig, () => { saveNow(); process.exit(0); }));
+function save() { if (!saveTimer) saveTimer = setTimeout(saveNow, REDIS_URL ? 3000 : 300); } // batches bursts of changes
+['SIGINT', 'SIGTERM'].forEach((sig) => process.on(sig, async () => { await saveNow(); process.exit(0); }));
 
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const hashPw = (pw, salt) => new Promise((resolve, reject) =>
@@ -434,7 +461,10 @@ server.on('error', (err) => {
 for (const file of Object.values(STATIC)) {
   if (!fs.existsSync(path.join(__dirname, file))) console.warn('Warning: missing file next to server.js: ' + file);
 }
-server.listen(PORT, () => console.log(`Server running: http://localhost:${PORT}  (accounts: ${Object.keys(accounts).length}, saved in ${DATA_FILE})`));
+// Load the accounts first, then accept players. If the database cannot be read, stop instead of starting empty and overwriting it.
+loadAll()
+  .then(() => server.listen(PORT, () => console.log(`Server running: http://localhost:${PORT}  (accounts: ${Object.keys(accounts).length}, saved in ${REDIS_URL ? 'Upstash Redis' : DATA_FILE})`)))
+  .catch((e) => { console.error('Could not load accounts: ' + e.message); process.exit(1); });
 
 // ---------------------------------------------------------------- client page
 const PAGE = /* html */ `<!doctype html>
