@@ -492,6 +492,7 @@ const server = http.createServer((req, res) => {
     return post[url.pathname](req, res).catch((e) => { console.error(e); if (!res.headersSent) json(res, 500, { error: 'Server error' }); });
   }
   if (req.method === 'GET' && url.pathname === '/api/time') return json(res, 200, { now: Date.now() }); // browsers use this to line their clocks up
+  if (req.method === 'GET' && url.pathname === '/api/star') return json(res, 200, { star: floatStar, now: Date.now() }); // where the star is right now
   if (req.method === 'GET' && url.pathname === '/api/events') return handleEvents(req, res, url);
   json(res, 404, { error: 'Not found' });
 });
@@ -1066,6 +1067,7 @@ const PAGE = /* html */ `<!doctype html>
   function enterSky() {
     transition(function () {
       scene = 'sky'; floaters = [];
+      loadStar(); // ask the server where the star is, so it shows even if nobody told us
       toSpawn();
       show('game');
       post('/api/scene', { token: token, sp: true }).catch(function () {});
@@ -1111,7 +1113,7 @@ const PAGE = /* html */ `<!doctype html>
   }
   var STAR_W = 46, STAR_HOVER = 40, STAR_BOB = 7, STAR_PERIOD = 2400; // size, height above the grass, bob height and bob length (ms)
   function drawFloatStar() {
-    if (!starState || !starImg.complete) return;
+    if (!starState || !starImg.naturalWidth) return;
     var t = Date.now() + clockOff; // the bob depends only on the server's clock, so everybody sees the same phase
     var bob = Math.sin((t % STAR_PERIOD) / STAR_PERIOD * Math.PI * 2) * STAR_BOB;
     var h = STAR_W * starImg.naturalHeight / starImg.naturalWidth;
@@ -1135,6 +1137,15 @@ const PAGE = /* html */ `<!doctype html>
       })
       .catch(function () { claimingId = 0; });
   }
+
+    // The star is also asked for directly: when the course is entered and every 4 s while in it. A player who joined late sees it too.
+  function loadStar() {
+    fetch('/api/star').then(function (r) { return r.json(); }).then(function (d) {
+      starState = d.star;
+      if (!clockSynced) { clockSynced = true; syncClock(); }
+    }).catch(function () {});
+  }
+  setInterval(function () { if (playing && scene === 'sky') loadStar(); }, 4000);
 
 
   // ---- game loop ----
