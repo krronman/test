@@ -26,12 +26,15 @@ const STATIC = {
   '/sky.png': 'sky.png', '/sky-walk.png': 'sky-walk.png',
   '/coin-bar.png': 'coin-bar.png', '/exit-btn.png': 'exit-btn.png',
   '/crate-wood.png': 'crate-wood.png', '/crate-steel.png': 'crate-steel.png',
+  '/crate-gold.png': 'crate-gold.png', '/crate-diamond.png': 'crate-diamond.png',
 };
 const STAR_REWARD = 10; // gold for reaching the star island
 // Things sold in the shop. Prices are checked here on the server, never on the client.
 const SHOP = {
   wood:  { name: '나무 상자', price: 100 },
   steel: { name: '강철 상자', price: 250 },
+  gold:    { name: '황금 상자', price: 500 },
+  diamond: { name: '다이아몬드 상자', price: 1000 },
 };
 const CHAT_MAX = 120, CHAT_KEEP = 50, CHAT_GAP_MS = 600;
 
@@ -97,11 +100,18 @@ function sendAll(event, data) {
 const broadcast = () => sendAll('users', onlineUsers());
 
 // Global chat. kind 'system' = notification written by the server, 'user' = typed by a player.
+const CHAT_TTL_MS = 60 * 60 * 1000; // messages older than 1 hour are deleted
+function pruneChat() {
+  const cutoff = Date.now() - CHAT_TTL_MS;
+  while (chatLog.length && (chatLog.length > CHAT_KEEP || chatLog[0].t < cutoff)) chatLog.shift();
+}
+setInterval(pruneChat, 60000);
+
 function pushChat(kind, text, name) {
-  const m = { kind, text };
+  const m = { kind, text, t: Date.now() }; // t = send time, shown when hovering a message
   if (name) m.name = name;
   chatLog.push(m);
-  while (chatLog.length > CHAT_KEEP) chatLog.shift();
+  pruneChat();
   sendAll('chat', m);
 }
 
@@ -544,6 +554,16 @@ const PAGE = /* html */ `<!doctype html>
   #chatLog li.mine b { color: #9ee0c0; }
   #chatInput { flex: none; width: 100%; padding: 8px 10px; font-size: .88rem; background: rgba(251,247,236,.88); }
   #chatInput:focus { background: #fff; }
+  #chatToggle, #miniBtn { align-self: flex-start; padding: 4px 12px; font-size: .8rem; border-radius: 14px; background: rgba(43,36,23,.78); color: #fff; }
+  #chatToggle.on, #miniBtn.on { background: rgba(184,137,43,.95); }
+  #chat.off #chatLog, #chat.off #chatInput { display: none; }
+  #chatTip { position: fixed; padding: 3px 8px; border-radius: 4px; background: rgba(20,14,4,.92); color: #fff;
+    font-size: .78rem; white-space: nowrap; pointer-events: none; }
+  /* minimap, top right under the coin bar */
+  #miniBtn { position: fixed; top: 70px; right: 16px; }
+  #mini { position: fixed; top: 106px; right: 16px; width: min(240px, 28vw); border: 2px solid rgba(184,137,43,.85);
+    border-radius: 8px; overflow: hidden; background: #000; box-shadow: 0 6px 18px rgba(20,12,2,.4); pointer-events: none; }
+  #mini canvas { display: block; width: 100%; height: auto; }
 
   /* shop items: transparent buttons laid over the cards of the panel image (percent of the panel) */
   #shop { container-type: inline-size; }
@@ -555,7 +575,7 @@ const PAGE = /* html */ `<!doctype html>
     pointer-events: none; filter: drop-shadow(0 3px 3px rgba(20,12,2,.5)); }
   /* the number sits on a patch the colour of the price strip, which hides the printed dash */
   .shopItem .price { position: absolute; left: 38.3%; top: 74%; width: 35%; height: 21%; display: flex; align-items: center;
-    padding-left: .5cqw; background: #b99669; color: #4b2a08; font: 800 1.9cqw/1 "Courier New", "Malgun Gothic", monospace; pointer-events: none; }
+    padding-left: .5cqw; color: #4b2a08; color: #4b2a08; font: 800 1.9cqw/1 "Courier New", "Malgun Gothic", monospace; pointer-events: none; }
   .shopItem.nogold .price { color: var(--danger); animation: nogold .4s; }
   @keyframes nogold { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
 
@@ -599,15 +619,21 @@ const PAGE = /* html */ `<!doctype html>
 <div id="coins" hidden><span id="coinText">0</span></div>
 <button id="exitBtn" type="button" tabindex="-1" aria-label="Exit" hidden></button>
 <div id="chat" hidden>
+  <button id="chatToggle" type="button" tabindex="-1"></button>
   <ul id="chatLog" aria-live="polite"></ul>
   <input id="chatInput" maxlength="120" autocomplete="off" placeholder="Press Enter to chat" aria-label="Chat message">
+  <div id="chatTip" hidden></div>
 </div>
+<button id="miniBtn" type="button" tabindex="-1" hidden>Map (M)</button>
+<div id="mini" hidden><canvas id="miniCv" width="480" height="320"></canvas></div>
 <div id="invWrap" hidden><div id="inv"><div class="slotLabel slotSword">Sword<small>skin</small></div><div class="slotLabel slotGun">Gun<small>skin</small></div></div></div>
 <div id="shopWrap" hidden>
   <div id="shop" role="dialog" aria-label="Shop">
     <button id="shopClose" type="button" aria-label="Close shop"></button>
     <button class="shopItem" type="button" tabindex="-1" data-item="wood" style="top: 27.06%" aria-label="나무 상자, 100 Gold"><img src="/crate-wood.png" alt=""><span class="price">100</span></button>
     <button class="shopItem" type="button" tabindex="-1" data-item="steel" style="top: 48.82%" aria-label="강철 상자, 250 Gold"><img src="/crate-steel.png" alt=""><span class="price">250</span></button>
+    <button class="shopItem" type="button" tabindex="-1" data-item="gold" style="top: 70.57%" aria-label="황금 상자, 500 Gold"><img src="/crate-gold.png" alt=""><span class="price">500</span></button>
+    <button class="shopItem" type="button" tabindex="-1" data-item="diamond" style="left: 23.36%; top: 27.06%" aria-label="다이아몬드 상자, 1000 Gold"><img src="/crate-diamond.png" alt=""><span class="price">1000</span></button>
   </div>
 </div>
 
@@ -628,6 +654,8 @@ const PAGE = /* html */ `<!doctype html>
   var DOOR = { cx: 768, x0: 731, x1: 805, y0: 6, y1: 74 };
   var DOOR_ZONE = { maxY: 185, halfW: 60 };
   var LOBBY_RETURN = { x: 768, y: 270 }; // where you stand when coming back from the course
+  var LOBBY_ZOOM = 1.8;       // the lobby is shown zoomed in on the player (1 = whole arena on screen)
+  var cam = { x: 0, y: 0, ok: false }; // top-left corner of the visible part of the arena, in arena pixels
   var FADE_MS = 300;          // fade to black / back (matches the CSS transition)
   var FALL_MS = 900;
   var KO_FONT = '"Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", sans-serif';
@@ -846,8 +874,38 @@ const PAGE = /* html */ `<!doctype html>
 
   // ---- chat (bottom left): Enter opens the box, Enter sends, Esc closes it ----
   var chatLog = $('chatLog'), chatInput = $('chatInput');
+  var CHAT_TTL = 60 * 60 * 1000; // messages older than 1 hour disappear
+  var chatOn = true, unread = 0, chatBtn = $('chatToggle'), chatTip = $('chatTip');
+  try { chatOn = localStorage.getItem('chatOn') !== '0'; } catch (e) {}
+  function setChat(on) {
+    chatOn = on; unread = 0;
+    $('chat').classList.toggle('off', !on);
+    chatBtn.classList.toggle('on', on);
+    chatBtn.textContent = on ? 'Chat: ON' : 'Chat: OFF';
+    if (!on) chatInput.blur(); else chatLog.scrollTop = chatLog.scrollHeight;
+    try { localStorage.setItem('chatOn', on ? '1' : '0'); } catch (e) {}
+  }
+  chatBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  chatBtn.addEventListener('click', function () { setChat(!chatOn); });
+  // hovering a message shows when it was sent
+  chatLog.addEventListener('mouseover', function (e) {
+    var li = e.target.closest ? e.target.closest('li') : null;
+    if (!li) return;
+    var r = li.getBoundingClientRect();
+    chatTip.textContent = new Date(+li.getAttribute('data-t')).toLocaleTimeString();
+    chatTip.style.left = r.left + 'px'; chatTip.style.top = (r.top - 26) + 'px';
+    chatTip.hidden = false;
+  });
+  chatLog.addEventListener('mouseout', function () { chatTip.hidden = true; });
+  setInterval(function () { // delete messages older than 1 hour
+    var cutoff = Date.now() - CHAT_TTL;
+    while (chatLog.firstChild && +chatLog.firstChild.getAttribute('data-t') < cutoff) chatLog.removeChild(chatLog.firstChild);
+  }, 30000);
+  setChat(chatOn);
+
   function addChat(m) {
     var li = document.createElement('li');
+    li.setAttribute('data-t', m.t || Date.now());
     if (m.kind === 'system') { li.className = 'sys'; li.textContent = m.text; }
     else {
       var b = document.createElement('b'); b.textContent = m.name;
@@ -858,6 +916,7 @@ const PAGE = /* html */ `<!doctype html>
     chatLog.append(li);
     while (chatLog.children.length > 60) chatLog.removeChild(chatLog.firstChild);
     if (stick || m.kind === 'user' && me && m.name === me.nickname) chatLog.scrollTop = chatLog.scrollHeight;
+    if (!chatOn) { unread++; chatBtn.textContent = 'Chat: OFF (' + unread + ')'; }
   }
   function sendChat() {
     var t = chatInput.value.trim();
@@ -876,9 +935,10 @@ const PAGE = /* html */ `<!doctype html>
       return;
     }
     if (!playing) return;
-    if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !shopOpen && !invOpen) { e.preventDefault(); if (!e.repeat) chatInput.focus(); return; }
+    if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !shopOpen && !invOpen) { e.preventDefault(); if (!e.repeat) { setChat(true); chatInput.focus(); } return; }
     if (e.code === 'Escape') { if (shopOpen) toggleShop(false); else if (invOpen) toggleInv(false); return; }
     if (e.code === 'KeyZ') { if (!e.repeat) toggleShop(); e.preventDefault(); return; }
+    if (e.code === 'KeyM') { if (!e.repeat) setMini(!miniOn); e.preventDefault(); return; }
     if (shopOpen) return; // the shop is open: no walking or other keys until it is closed
     if (e.code === 'KeyX') { if (!e.repeat) toggleInv(); e.preventDefault(); return; }
     if (invOpen) return;
@@ -1058,21 +1118,64 @@ const PAGE = /* html */ `<!doctype html>
     ctx.globalAlpha = 1;
   }
 
+  // ---- minimap (top right): the arena with a dot for every player in the lobby. M or the Map button toggles it ----
+  var miniOn = true, miniCv = $('miniCv'), mctx = miniCv.getContext('2d');
+  try { miniOn = localStorage.getItem('miniOn') !== '0'; } catch (e) {}
+  function setMini(on) {
+    miniOn = on;
+    try { localStorage.setItem('miniOn', on ? '1' : '0'); } catch (e) {}
+    syncMini();
+  }
+  function syncMini() { // only in the lobby; the course is single-player
+    var inLobby = playing && scene === 'lobby';
+    $('miniBtn').hidden = !inLobby;
+    $('miniBtn').classList.toggle('on', miniOn);
+    $('mini').hidden = !(inLobby && miniOn);
+  }
+  $('miniBtn').addEventListener('mousedown', function (e) { e.preventDefault(); });
+  $('miniBtn').addEventListener('click', function () { setMini(!miniOn); });
+  function miniDot(x, y, r, fill, line) {
+    mctx.beginPath(); mctx.arc(x, y, r, 0, Math.PI * 2);
+    mctx.fillStyle = fill; mctx.fill(); mctx.lineWidth = 2; mctx.strokeStyle = line; mctx.stroke();
+  }
+  function drawMini(now) {
+    if (!miniOn) return;
+    var cw = miniCv.width, ch = miniCv.height, sx = cw / W, sy = ch / H;
+    mctx.clearRect(0, 0, cw, ch);
+    mctx.drawImage(bg, 0, 0, cw, ch);
+    mctx.fillStyle = 'rgba(20,14,4,0.22)'; mctx.fillRect(0, 0, cw, ch);
+    mctx.strokeStyle = 'rgba(255,227,161,0.95)'; mctx.lineWidth = 2; // the part of the arena on screen now
+    mctx.strokeRect(cam.x * sx, cam.y * sy, (W / LOBBY_ZOOM) * sx, (H / LOBBY_ZOOM) * sy);
+    lobbyOthers().forEach(function (id) { var o = others[id]; miniDot(o.x * sx, o.y * sy, 6, o.color || '#888', '#fff'); });
+    miniDot(me.x * sx, me.y * sy, 8 + Math.sin(now / 250), '#ffd24a', '#3a2a08'); // you: gold, pulsing a little
+  }
   var prev = performance.now();
   function loop(now) {
     var dt = Math.min(0.05, (now - prev) / 1000); prev = now;
+    syncMini();
     if (playing && bg.complete && sprites.complete && skyBg.complete) {
       update(dt);
       ctx.clearRect(0, 0, W, H);
       if (scene === 'lobby') {
         sendState(now);
+        // camera: zoom in on the player, easing toward them, never showing anything outside the arena image
+        var vw = W / LOBBY_ZOOM, vh = H / LOBBY_ZOOM;
+        var tx = Math.max(0, Math.min(W - vw, me.x - vw / 2));
+        var ty = Math.max(0, Math.min(H - vh, me.y - 50 - vh / 2));
+        if (!cam.ok) { cam.x = tx; cam.y = ty; cam.ok = true; }
+        else { var ck = 1 - Math.exp(-dt * 10); cam.x += (tx - cam.x) * ck; cam.y += (ty - cam.y) * ck; }
+        ctx.save();
+        ctx.setTransform(LOBBY_ZOOM, 0, 0, LOBBY_ZOOM, -cam.x * LOBBY_ZOOM, -cam.y * LOBBY_ZOOM);
         ctx.drawImage(bg, 0, 0, W, H);
         drawDoorSign();
         var all = lobbyOthers().map(function (id) { return others[id]; });
         all.push(me);
         all.sort(function (a, b) { return a.y - b.y; }); // players lower on screen are drawn in front
         all.forEach(function (p) { drawPlayer(p, now, p === me, LOBBY.scale); });
+        ctx.restore();
+        drawMini(now);
       } else {
+        cam.ok = false; // the next visit to the lobby starts centred on the player
         ctx.drawImage(skyBg, 0, 0, W, H); // the course is single-player: nobody else is drawn here
         drawPlayer(me, now, true, SKY.scale);
       }
