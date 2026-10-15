@@ -1188,6 +1188,9 @@ const PAGE = /* html */ `<!doctype html>
       else if (onPad(me.x, me.y)) { me.vz = PAD_V; me.z = 0.01; } // jump pad: launch
     }
 
+    if (scene === 'sky' && starState && !fall && !transitioning && claimingId !== starState.id &&
+        Math.hypot(me.x - starState.x, me.y - starState.y) < 34) claimStar(); // touching the star
+
     var k = Math.min(1, dt * 14); // smooth other players toward their last known position
     Object.keys(others).forEach(function (id) {
       var o = others[id];
