@@ -1185,6 +1185,7 @@ const PAGE = /* html */ `<!doctype html>
       var g = groundAt(me.x, me.y);
       if (g === 0) { fall = { t0: performance.now() }; keys.jump = false; me.moving = false; } // air or brown cliff: fall
       else if (g === 2) reachStar();
+      else if (onPad(me.x, me.y)) { me.vz = PAD_V; me.z = 0.01; } // jump pad: launch
     }
 
     var k = Math.min(1, dt * 14); // smooth other players toward their last known position
@@ -1318,6 +1319,7 @@ const PAGE = /* html */ `<!doctype html>
       } else {
         cam.ok = false; // the next visit to the lobby starts centred on the player
         ctx.drawImage(skyBg, 0, 0, W, H); // the course is single-player: nobody else is drawn here
+        drawFloatStar();
         drawPlayer(me, now, true, SKY.scale);
       }
       drawFloaters(now);
