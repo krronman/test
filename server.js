@@ -41,8 +41,11 @@ const STATIC = {
   '/crate-wood.png': 'crate-wood.png', '/crate-steel.png': 'crate-steel.png',
   '/crate-gold.png': 'crate-gold.png', '/crate-diamond.png': 'crate-diamond.png',
   '/star.png': 'star.png',
+  '/leaderboard.png': 'leaderboard.png',
 };
 const STAR_REWARD = 10; // gold for reaching the star island
+const TROPHY_PER_FINISH = 1; // trophies for reaching the star island at the end of the course
+const BOARD_SIZE = 10;       // how many players the leaderboard shows
 // The floating star on the course: one at a time, shared by everybody, replaced every 2 minutes.
 const FLOAT_STAR = { reward: 10, everyMs: 2 * 60 * 1000, reach: 90 }; // reach: how close (px) a player must be to take it
 // Where it can appear: grass on the islands that are neither the start nor the finish island. [x, y] in sky-image pixels.
@@ -193,7 +196,7 @@ function profileOf(user) {
   return {
     token: user.token, id: user.pid, loginId: a.id, nickname: a.name, color: a.color, joinedAt: user.joinedAt,
     x: Math.round(user.x), y: Math.round(user.y), dir: user.dir,
-    gold: a.gold, items: a.items, opened: a.opened,
+    gold: a.gold, trophies: a.trophies || 0, items: a.items, opened: a.opened,
   };
 }
 
@@ -278,9 +281,10 @@ async function handleRegister(req, res) {
   if (accounts[key]) return json(res, 409, { error: 'That ID is already taken.' }); // someone else won the race while hashing
   accounts[key] = {
     id: loginId, name: nick, color: COLORS[Object.keys(accounts).length % COLORS.length],
-    salt, hash, gold: 0, items: {}, opened: {}, created: Date.now(), lastLogin: Date.now(),
+    salt, hash, gold: 0, trophies: 0, items: {}, opened: {}, created: Date.now(), lastLogin: Date.now(),
   };
   save();
+
   json(res, 200, profileOf(startSession(key)));
 }
 
@@ -366,6 +370,13 @@ async function handleStar(req, res) {
   whisper(user, '떠다니는 별을 획득했습니다! +' + FLOAT_STAR.reward + ' 골드'); // only the winner sees this
   json(res, 200, { gold: acct.gold });
 }
+// The leaderboard: everybody in the game data, most trophies first (ties: whoever registered first).
+function leaderboard() {
+  return Object.values(accounts)
+    .sort((a, b) => (b.trophies || 0) - (a.trophies || 0) || a.created - b.created)
+    .slice(0, BOARD_SIZE)
+    .map((a) => ({ name: a.name, trophies: a.trophies || 0 }));
+}
 // ---------------------------------------------------------------- game actions
 async function handleMove(req, res) {
   const { token, x, y, z, dir, moving } = await readJson(req);
@@ -409,8 +420,10 @@ async function handleReward(req, res) {
   if (!user.sp || now - user.lastReward < 1500) return json(res, 400, { error: 'No reward', gold: acct.gold });
   user.lastReward = now;
   acct.gold += STAR_REWARD;
+  acct.trophies = (acct.trophies || 0) + TROPHY_PER_FINISH; // finishing the course earns a trophy
   save();
-  json(res, 200, { gold: acct.gold });
+  sendAll('leaderboard', leaderboard());
+  json(res, 200, { gold: acct.gold, trophies: acct.trophies });
 }
 
 // Buying (= opening) a chest: the price is taken here, then everyone sees the announcement in the global chat.
@@ -457,6 +470,7 @@ function handleEvents(req, res, url) {
   res.write(`event: chathistory\ndata: ${JSON.stringify(chatLog)}\n\n`);
   res.write(`event: star\ndata: ${JSON.stringify(starState())}\n\n`);
   res.write(`event: users\ndata: ${JSON.stringify(onlineUsers())}\n\n`);
+  res.write(`event: leaderboard\ndata: ${JSON.stringify(leaderboard())}\n\n`);
   dirty = true;
 
   const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -493,6 +507,7 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/api/time') return json(res, 200, { now: Date.now() }); // browsers use this to line their clocks up
   if (req.method === 'GET' && url.pathname === '/api/star') return json(res, 200, { star: floatStar, now: Date.now() }); // where the star is right now
+  if (req.method === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, leaderboard());
   if (req.method === 'GET' && url.pathname === '/api/events') return handleEvents(req, res, url);
   json(res, 404, { error: 'Not found' });
 });
@@ -554,7 +569,7 @@ const PAGE = /* html */ `<!doctype html>
   input:focus-visible, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
   .error { color: var(--danger); min-height: 1.5em; margin: 10px 0 0; font-size: .92rem; }
 
-  #hud { position: fixed; top: 14px; left: 14px; width: 240px; max-height: calc(100% - 250px); overflow: auto;
+  #hud { position: fixed; bottom: 14px; right: 14px; width: 240px; max-height: calc(50% - 68px); overflow: auto;
     background: rgba(251,247,236,.94); border: 1px solid var(--gold); border-radius: 6px; padding: 14px; }
   .me { display: flex; align-items: center; gap: 12px; }
   .badge { flex: none; width: 40px; height: 40px; border-radius: 50%; color: #fff; font-weight: 700;
@@ -644,6 +659,10 @@ const PAGE = /* html */ `<!doctype html>
   #mini { position: fixed; top: 106px; right: 16px; width: min(240px, 28vw); border: 2px solid rgba(184,137,43,.85);
     border-radius: 8px; overflow: hidden; background: #000; box-shadow: 0 6px 18px rgba(20,12,2,.4); pointer-events: none; }
   #mini canvas { display: block; width: 100%; height: auto; }
+  /* trophy counter, top left (lower while in the course, where the exit button is) */
+  #trophy { position: fixed; top: 14px; left: 16px; padding: 5px 14px; border-radius: 16px; background: rgba(43,36,23,.78);
+    color: #fff; font-weight: 700; font-size: 1rem; }
+  #trophy.low { top: 76px; }
 
   /* shop items: transparent buttons laid over the cards of the panel image (percent of the panel) */
   #shop { container-type: inline-size; }
@@ -651,7 +670,7 @@ const PAGE = /* html */ `<!doctype html>
     background: transparent; cursor: pointer; transition: background .12s, transform .12s; }
   .shopItem:hover { background: rgba(255,240,200,.22); }
   .shopItem:active { transform: scale(.97); }
-  .shopItem img { position: absolute; left: 6.8%; top: 6.5%; width: 86.4%; height: 62.4%; object-fit: contain;
+  .shopItem img { position: absolute; left: 11.7%; top: 10.6%; width: 76.5%; height: 54.1%; object-fit: contain;
     pointer-events: none; filter: drop-shadow(0 3px 3px rgba(20,12,2,.5)); }
   /* the number sits on a patch the colour of the price strip, which hides the printed dash */
   .shopItem .price { position: absolute; left: 38.3%; top: 74%; width: 35%; height: 21%; display: flex; align-items: center;
@@ -698,6 +717,7 @@ const PAGE = /* html */ `<!doctype html>
 <div id="hint" hidden>W A S D move &middot; Space jump &middot; X inventory &middot; Z shop &middot; Enter chat</div>
 <div id="coins" hidden><span id="coinText">0</span></div>
 <button id="exitBtn" type="button" tabindex="-1" aria-label="Exit" hidden></button>
+<div id="trophy" hidden>🏆 <span id="trophyN">0</span></div>
 <div id="chat" hidden>
   <button id="chatToggle" type="button" tabindex="-1"></button>
   <ul id="chatLog" aria-live="polite"></ul>
@@ -713,7 +733,7 @@ const PAGE = /* html */ `<!doctype html>
     <button class="shopItem" type="button" tabindex="-1" data-item="wood" style="top: 27.06%" aria-label="나무 상자, 100 Gold"><img src="/crate-wood.png" alt=""><span class="price">100</span></button>
     <button class="shopItem" type="button" tabindex="-1" data-item="steel" style="top: 48.82%" aria-label="강철 상자, 250 Gold"><img src="/crate-steel.png" alt=""><span class="price">250</span></button>
     <button class="shopItem" type="button" tabindex="-1" data-item="gold" style="top: 70.57%" aria-label="황금 상자, 500 Gold"><img src="/crate-gold.png" alt=""><span class="price">500</span></button>
-    <button class="shopItem" type="button" tabindex="-1" data-item="diamond" style="left: 23.36%; top: 27.06%" aria-label="다이아몬드 상자, 1000 Gold"><img src="/crate-diamond.png" alt=""><span class="price">1000</span></button>
+    <button class="shopItem" type="button" tabindex="-1" data-item="diamond" style="left: 23.25%; top: 27.06%" aria-label="다이아몬드 상자, 1000 Gold"><img src="/crate-diamond.png" alt=""><span class="price">1000</span></button>
   </div>
 </div>
 
@@ -811,6 +831,7 @@ const PAGE = /* html */ `<!doctype html>
     $('bagBtn').hidden = !inGame;
     $('shopBtn').hidden = !inGame;
     $('chat').hidden = !inGame;
+    $('trophy').hidden = !inGame;
     playing = inGame;
     if (mode === 'join') $('fId').focus();
   }
@@ -871,6 +892,7 @@ const PAGE = /* html */ `<!doctype html>
     me.moving = false; me.z = 0; me.vz = 0;
     scene = 'lobby'; fall = null;
     setGold(me.gold || 0, false);           // saved on the account, so it is the same on every login
+    setTrophies(me.trophies || 0); loadBoard();
     $('err').textContent = '';
     $('fPw').value = '';
     connect();
@@ -899,6 +921,7 @@ const PAGE = /* html */ `<!doctype html>
       JSON.parse(e.data).forEach(function (m) { addChat(m); });
     });
     es.addEventListener('chat', function (e) { addChat(JSON.parse(e.data)); });
+    es.addEventListener('leaderboard', function (e) { board = JSON.parse(e.data); });
     es.addEventListener('star', function (e) { // the floating star: where it is, and the server's clock
       starState = JSON.parse(e.data).star;
       if (!clockSynced) { clockSynced = true; syncClock(); }
@@ -1147,6 +1170,35 @@ const PAGE = /* html */ `<!doctype html>
   }
   setInterval(function () { if (playing && scene === 'sky') loadStar(); }, 4000);
 
+  // ---- trophies and the leaderboard ----
+  function setTrophies(n) { $('trophyN').textContent = n; }
+  // The board stands in the top-left corner of the arena (outside the floor). It shows the top 10 by trophies.
+  var boardImg = new Image(); boardImg.src = '/leaderboard.png';
+  var BOARD = { x: 22, y: 34, w: 260 };                                       // where it stands, in arena pixels (w = width)
+  var BOARD_ROWS = [309, 349.5, 390.5, 432, 472, 512, 552.5, 592, 630, 666]; // row centres in board-image pixels (the image is 720 wide)
+  var board = [];                                                             // [{ name, trophies }], best first, sent by the server
+  function loadBoard() {
+    fetch('/api/leaderboard').then(function (r) { return r.json(); }).then(function (d) { board = d; }).catch(function () {});
+  }
+  function drawBoard() {
+    if (!boardImg.naturalWidth) return;
+    var k = BOARD.w / 720; // arena pixels per board-image pixel
+    ctx.drawImage(boardImg, BOARD.x, BOARD.y, BOARD.w, boardImg.naturalHeight * k);
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold ' + (19 * k) + 'px "Palatino Linotype", "Book Antiqua", Georgia, "Malgun Gothic", serif';
+    ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 2;
+    board.forEach(function (e, i) {
+      if (i >= BOARD_ROWS.length) return;
+      var y = BOARD.y + BOARD_ROWS[i] * k, name = e.name;
+      ctx.fillStyle = me && e.name === me.nickname ? '#ffd24a' : '#f3e2b5'; // your own line is gold
+      while (name.length > 1 && ctx.measureText(name).width > 160 * k) name = name.slice(0, -1);
+      if (name !== e.name) name += '\u2026';
+      ctx.textAlign = 'left';  ctx.fillText(name, BOARD.x + 208 * k, y);
+      ctx.textAlign = 'right'; ctx.fillText(String(e.trophies), BOARD.x + 500 * k, y);
+    });
+    ctx.restore();
+  }
 
   // ---- game loop ----
   function update(dt) {
@@ -1276,6 +1328,7 @@ const PAGE = /* html */ `<!doctype html>
     $('miniBtn').hidden = !inLobby;
     $('miniBtn').classList.toggle('on', miniOn);
     $('mini').hidden = !(inLobby && miniOn);
+    $('trophy').classList.toggle('low', !inLobby); // in the course it sits under the exit button
   }
   $('miniBtn').addEventListener('mousedown', function (e) { e.preventDefault(); });
   $('miniBtn').addEventListener('click', function () { setMini(!miniOn); });
@@ -1291,6 +1344,7 @@ const PAGE = /* html */ `<!doctype html>
     mctx.fillStyle = 'rgba(20,14,4,0.22)'; mctx.fillRect(0, 0, cw, ch);
     mctx.strokeStyle = 'rgba(255,227,161,0.95)'; mctx.lineWidth = 2; // the part of the arena on screen now
     mctx.strokeRect(cam.x * sx, cam.y * sy, (W / LOBBY_ZOOM) * sx, (H / LOBBY_ZOOM) * sy);
+    mctx.fillStyle = '#e0b24a'; mctx.fillRect(BOARD.x * sx, BOARD.y * sy, BOARD.w * sx, BOARD.w * 742 / 720 * sy); // where the leaderboard stands
     lobbyOthers().forEach(function (id) { var o = others[id]; miniDot(o.x * sx, o.y * sy, 6, o.color || '#888', '#fff'); });
     miniDot(me.x * sx, me.y * sy, 8 + Math.sin(now / 250), '#ffd24a', '#3a2a08'); // you: gold, pulsing a little
   }
@@ -1313,6 +1367,7 @@ const PAGE = /* html */ `<!doctype html>
         ctx.setTransform(LOBBY_ZOOM, 0, 0, LOBBY_ZOOM, -cam.x * LOBBY_ZOOM, -cam.y * LOBBY_ZOOM);
         ctx.drawImage(bg, 0, 0, W, H);
         drawDoorSign();
+        drawBoard();
         var all = lobbyOthers().map(function (id) { return others[id]; });
         all.push(me);
         all.sort(function (a, b) { return a.y - b.y; }); // players lower on screen are drawn in front
