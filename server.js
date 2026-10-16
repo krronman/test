@@ -44,7 +44,6 @@ const STATIC = {
   '/leaderboard.png': 'leaderboard.png',
 };
 const STAR_REWARD = 10; // gold for reaching the star island
-const TROPHY_PER_FINISH = 1; // trophies for reaching the star island at the end of the course
 const BOARD_SIZE = 10;       // how many players the leaderboard shows
 // The floating star on the course: one at a time, shared by everybody, replaced every 2 minutes.
 const FLOAT_STAR = { reward: 10, everyMs: 2 * 60 * 1000, reach: 90 }; // reach: how close (px) a player must be to take it
@@ -377,6 +376,15 @@ function leaderboard() {
     .slice(0, BOARD_SIZE)
     .map((a) => ({ name: a.name, trophies: a.trophies || 0 }));
 }
+// Gives (or takes, with a negative n) trophies. Every future trophy rule should go through here:
+// it saves, updates the leaderboard for everybody, and each browser then refreshes its own counter.
+function giveTrophies(key, n) {
+  const a = accounts[key];
+  if (!a) return;
+  a.trophies = Math.max(0, (a.trophies || 0) + n);
+  save();
+  sendAll('leaderboard', leaderboard());
+}
 // ---------------------------------------------------------------- game actions
 async function handleMove(req, res) {
   const { token, x, y, z, dir, moving } = await readJson(req);
@@ -420,10 +428,8 @@ async function handleReward(req, res) {
   if (!user.sp || now - user.lastReward < 1500) return json(res, 400, { error: 'No reward', gold: acct.gold });
   user.lastReward = now;
   acct.gold += STAR_REWARD;
-  acct.trophies = (acct.trophies || 0) + TROPHY_PER_FINISH; // finishing the course earns a trophy
   save();
-  sendAll('leaderboard', leaderboard());
-  json(res, 200, { gold: acct.gold, trophies: acct.trophies });
+  json(res, 200, { gold: acct.gold });
 }
 
 // Buying (= opening) a chest: the price is taken here, then everyone sees the announcement in the global chat.
@@ -507,6 +513,11 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/api/time') return json(res, 200, { now: Date.now() }); // browsers use this to line their clocks up
   if (req.method === 'GET' && url.pathname === '/api/star') return json(res, 200, { star: floatStar, now: Date.now() }); // where the star is right now
+  if (req.method === 'GET' && url.pathname === '/api/me') { // the player's own numbers, so the screen can always catch up
+    const user = userByToken(url.searchParams.get('token'));
+    if (!user) return json(res, 401, { error: 'Not logged in' });
+    return json(res, 200, { gold: accounts[user.key].gold, trophies: accounts[user.key].trophies || 0 });
+  }
   if (req.method === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, leaderboard());
   if (req.method === 'GET' && url.pathname === '/api/events') return handleEvents(req, res, url);
   json(res, 404, { error: 'Not found' });
@@ -921,7 +932,7 @@ const PAGE = /* html */ `<!doctype html>
       JSON.parse(e.data).forEach(function (m) { addChat(m); });
     });
     es.addEventListener('chat', function (e) { addChat(JSON.parse(e.data)); });
-    es.addEventListener('leaderboard', function (e) { board = JSON.parse(e.data); });
+    es.addEventListener('leaderboard', function (e) { board = JSON.parse(e.data); loadSelf(); }); // a trophy changed somewhere: refresh ours too
     es.addEventListener('star', function (e) { // the floating star: where it is, and the server's clock
       starState = JSON.parse(e.data).star;
       if (!clockSynced) { clockSynced = true; syncClock(); }
@@ -1172,9 +1183,16 @@ const PAGE = /* html */ `<!doctype html>
 
   // ---- trophies and the leaderboard ----
   function setTrophies(n) { $('trophyN').textContent = n; }
-  // The board stands in the top-left corner of the arena (outside the floor). It shows the top 10 by trophies.
+  function loadSelf() { // ask the server for our own trophy count; runs whenever the leaderboard changes, and every 15 s
+    if (!token) return;
+    fetch('/api/me?token=' + encodeURIComponent(token)).then(function (r) { return r.json(); }).then(function (d) {
+      if (typeof d.trophies === 'number') setTrophies(d.trophies);
+    }).catch(function () {});
+  }
+  setInterval(loadSelf, 15000);
+  // The board hangs on the top wall, to the left of the single-player entrance. It shows the top 10 by trophies.
   var boardImg = new Image(); boardImg.src = '/leaderboard.png';
-  var BOARD = { x: 22, y: 34, w: 260 };                                       // where it stands, in arena pixels (w = width)
+  var BOARD = { x: 440, y: 2, w: 240 };                                 // where it stands, in arena pixels (w = width)
   var BOARD_ROWS = [309, 349.5, 390.5, 432, 472, 512, 552.5, 592, 630, 666]; // row centres in board-image pixels (the image is 720 wide)
   var board = [];                                                             // [{ name, trophies }], best first, sent by the server
   function loadBoard() {
@@ -1186,7 +1204,7 @@ const PAGE = /* html */ `<!doctype html>
     ctx.drawImage(boardImg, BOARD.x, BOARD.y, BOARD.w, boardImg.naturalHeight * k);
     ctx.save();
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold ' + (19 * k) + 'px "Palatino Linotype", "Book Antiqua", Georgia, "Malgun Gothic", serif';
+    ctx.font = 'bold ' + (20 * k) + 'px "Palatino Linotype", "Book Antiqua", Georgia, "Malgun Gothic", serif';
     ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 2;
     board.forEach(function (e, i) {
       if (i >= BOARD_ROWS.length) return;
