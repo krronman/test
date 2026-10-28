@@ -684,8 +684,8 @@ const PAGE = /* html */ `<!doctype html>
   .shopItem img { position: absolute; left: 11.7%; top: 10.6%; width: 76.5%; height: 54.1%; object-fit: contain;
     pointer-events: none; filter: drop-shadow(0 3px 3px rgba(20,12,2,.5)); }
   /* the number sits on a patch the colour of the price strip, which hides the printed dash */
-  .shopItem .price { position: absolute; left: 38.3%; top: 74%; width: 35%; height: 21%; display: flex; align-items: center;
-    padding-left: .5cqw; color: #4b2a08; color: #4b2a08; font: 800 1.9cqw/1 "Courier New", "Malgun Gothic", monospace; pointer-events: none; }
+  .shopItem .price { position: absolute; left: 34%; top: 74%; width: 62%; height: 21%; display: flex; align-items: center; justify-content: center;
+    color: #4b2a08; font: 800 1.9cqw/1 "Courier New", "Malgun Gothic", monospace; pointer-events: none; }
   .shopItem.nogold .price { color: var(--danger); animation: nogold .4s; }
   @keyframes nogold { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
 
